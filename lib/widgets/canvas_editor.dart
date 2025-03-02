@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../providers/canvas_provider.dart';
 import 'editable_element.dart';
 import 'canvas_toolbar.dart';
+import 'alignment_guides.dart';
+import 'grid_background.dart';
 
 class CanvasEditor extends StatelessWidget {
   const CanvasEditor({Key? key}) : super(key: key);
@@ -38,7 +40,25 @@ class CanvasArea extends StatelessWidget {
         child: Consumer<CanvasState>(
           builder: (context, canvasState, _) {
             return Stack(
-              children: canvasState.elements.map((element) => EditableElement(element: element)).toList(),
+              children: [
+                // Grid background
+                const GridBackground(
+                  gridSize: 20.0,
+                  gridColor: Color(0x11000000),
+                  gridThickness: 0.5,
+                ),
+
+                // Canvas elements
+                ...canvasState.elements.map((element) => EditableElement(element: element)).toList(),
+
+                // Alignment guides
+                AlignmentGuides(
+                  horizontalGuideLines: canvasState.horizontalGuideLines,
+                  verticalGuideLines: canvasState.verticalGuideLines,
+                  guideColor: Colors.blue.withOpacity(0.7),
+                  guideThickness: 1.5,
+                ),
+              ],
             );
           },
         ),
