@@ -1,15 +1,25 @@
 import 'package:flutter/material.dart';
 import '../models/canvas_element.dart';
+import 'dart:math' as math;
 
 class CanvasState extends ChangeNotifier {
   List<CanvasElement> _elements = [];
   CanvasElement? _selectedElement;
 
-  // Snapping configuration
-  final double _snapThreshold = 10.0; // Distance in pixels to trigger snapping
+  // Snapping configuration - further reduced threshold for even gentler snapping
+  final double _snapThreshold =
+      3.0; // Reduced from 5.0 to 3.0 for very gentle snapping
   final double _gridSize = 20.0; // Size of the grid cells
   bool _snapToGridEnabled = true;
   bool _snapToElementsEnabled = true;
+
+  // Track last snap state to help with unsnapping
+  bool _wasSnappedX = false;
+  bool _wasSnappedY = false;
+  double _lastSnapX = 0.0;
+  double _lastSnapY = 0.0;
+  int _breakAttemptCountX = 0;
+  int _breakAttemptCountY = 0;
 
   // Snapping guide lines
   List<double> _horizontalGuideLines = [];
@@ -64,100 +74,213 @@ class CanvasState extends ChangeNotifier {
     _horizontalGuideLines = [];
     _verticalGuideLines = [];
 
-    // Only apply snapping if we're close enough to snap points
+    // Calculate movement velocity to detect faster movements - lower threshold
+    double moveVelocity = math.sqrt(dx * dx + dy * dy);
+    bool fastMovement =
+        moveVelocity > 1.5; // Reduced from 3.0 to 1.5 for easier break away
+
+    // Check if user is trying to break away from snap
+    bool breakingSnapX = false;
+    bool breakingSnapY = false;
+
+    // Makes breaking from snaps extremely easy - any movement can break the snap
+    if (_wasSnappedX) {
+      // If any X movement or fast movement, break free
+      if (dx != 0 || fastMovement) {
+        _breakAttemptCountX++;
+        // Break free on first attempt if movement is intentional
+        if (_breakAttemptCountX >= 1 || fastMovement || dx.abs() > 1.0) {
+          breakingSnapX = true;
+          // Add a smaller boost to help break free but maintain control
+          newX = element.x +
+              (dx *
+                  1.5); // Reduced from 3.0 to 1.5 for more controlled movement
+          _breakAttemptCountX = 0; // Reset counter
+        }
+      }
+    } else {
+      _breakAttemptCountX = 0; // Reset when not snapped
+    }
+
+    if (_wasSnappedY) {
+      // If any Y movement or fast movement, break free
+      if (dy != 0 || fastMovement) {
+        _breakAttemptCountY++;
+        // Break free on first attempt if movement is intentional
+        if (_breakAttemptCountY >= 1 || fastMovement || dy.abs() > 1.0) {
+          breakingSnapY = true;
+          // Add a smaller boost to help break free but maintain control
+          newY = element.y +
+              (dy *
+                  1.5); // Reduced from 3.0 to 1.5 for more controlled movement
+          _breakAttemptCountY = 0; // Reset counter
+        }
+      }
+    } else {
+      _breakAttemptCountY = 0; // Reset when not snapped
+    }
+
+    // Only apply snapping if we're not deliberately trying to break free
     bool shouldSnapX = false;
     bool shouldSnapY = false;
     double snappedX = newX;
     double snappedY = newY;
 
-    // Check grid snapping
-    if (_shouldSnapToGrid()) {
-      double gridSnappedX = _snapToGrid(newX);
-      double gridSnappedY = _snapToGrid(newY);
+    // No snapping at all for fast movements
+    if (fastMovement) {
+      // Reset snap tracking on fast movements
+      _wasSnappedX = false;
+      _wasSnappedY = false;
 
-      if ((gridSnappedX - newX).abs() < _snapThreshold) {
-        snappedX = gridSnappedX;
-        shouldSnapX = true;
-      }
-
-      if ((gridSnappedY - newY).abs() < _snapThreshold) {
-        snappedY = gridSnappedY;
-        shouldSnapY = true;
-      }
+      // Update element position without any snapping for fast movements
+      updateElement(
+        id,
+        element.copyWith(
+          x: newX,
+          y: newY,
+        ),
+      );
+      return; // Skip the rest of the method
     }
 
-    // Check element snapping
-    if (_shouldSnapToElements()) {
-      final otherElements = _elements.where((e) => e.id != id).toList();
+    // Reset snap tracking for normal movements
+    bool previouslySnappedX = _wasSnappedX;
+    bool previouslySnappedY = _wasSnappedY;
+    _wasSnappedX = false;
+    _wasSnappedY = false;
 
-      // Element edges
-      final left = newX;
-      final right = newX + element.width;
-      final top = newY;
-      final bottom = newY + element.height;
-      final centerX = newX + element.width / 2;
-      final centerY = newY + element.height / 2;
+    // Only check for new snapping if we're not trying to break free and movement is small
+    // This prevents snapping when user is making larger movements
+    bool slowXMovement = dx.abs() < 1.2;
+    bool slowYMovement = dy.abs() < 1.2;
 
-      // Check horizontal alignment
-      for (final other in otherElements) {
-        final otherLeft = other.x;
-        final otherRight = other.x + other.width;
-        final otherCenterX = other.x + other.width / 2;
+    if (!breakingSnapX && !previouslySnappedX && slowXMovement) {
+      // Check grid snapping for X
+      if (_shouldSnapToGrid()) {
+        double gridSnappedX = _snapToGrid(newX);
 
-        // Check various horizontal alignments
-        if (!shouldSnapX) {
-          if ((left - otherLeft).abs() < _snapThreshold) {
-            snappedX = otherLeft;
-            shouldSnapX = true;
-            _verticalGuideLines.add(otherLeft);
-          } else if ((right - otherRight).abs() < _snapThreshold) {
-            snappedX = otherRight - element.width;
-            shouldSnapX = true;
-            _verticalGuideLines.add(otherRight);
-          } else if ((left - otherRight).abs() < _snapThreshold) {
-            snappedX = otherRight;
-            shouldSnapX = true;
-            _verticalGuideLines.add(otherRight);
-          } else if ((right - otherLeft).abs() < _snapThreshold) {
-            snappedX = otherLeft - element.width;
-            shouldSnapX = true;
-            _verticalGuideLines.add(otherLeft);
-          } else if ((centerX - otherCenterX).abs() < _snapThreshold) {
-            snappedX = otherCenterX - element.width / 2;
-            shouldSnapX = true;
-            _verticalGuideLines.add(otherCenterX);
-          }
+        if ((gridSnappedX - newX).abs() < _snapThreshold) {
+          snappedX = gridSnappedX;
+          shouldSnapX = true;
+          _wasSnappedX = true;
+          _lastSnapX = gridSnappedX;
         }
       }
 
-      // Check vertical alignment
-      for (final other in otherElements) {
-        final otherTop = other.y;
-        final otherBottom = other.y + other.height;
-        final otherCenterY = other.y + other.height / 2;
+      // Check element snapping for X
+      if (_shouldSnapToElements() && !shouldSnapX) {
+        final otherElements = _elements.where((e) => e.id != id).toList();
 
-        // Check various vertical alignments
-        if (!shouldSnapY) {
-          if ((top - otherTop).abs() < _snapThreshold) {
-            snappedY = otherTop;
-            shouldSnapY = true;
-            _horizontalGuideLines.add(otherTop);
-          } else if ((bottom - otherBottom).abs() < _snapThreshold) {
-            snappedY = otherBottom - element.height;
-            shouldSnapY = true;
-            _horizontalGuideLines.add(otherBottom);
-          } else if ((top - otherBottom).abs() < _snapThreshold) {
-            snappedY = otherBottom;
-            shouldSnapY = true;
-            _horizontalGuideLines.add(otherBottom);
-          } else if ((bottom - otherTop).abs() < _snapThreshold) {
-            snappedY = otherTop - element.height;
-            shouldSnapY = true;
-            _horizontalGuideLines.add(otherTop);
-          } else if ((centerY - otherCenterY).abs() < _snapThreshold) {
-            snappedY = otherCenterY - element.height / 2;
-            shouldSnapY = true;
-            _horizontalGuideLines.add(otherCenterY);
+        // Element edges
+        final left = newX;
+        final right = newX + element.width;
+        final centerX = newX + element.width / 2;
+
+        // Check horizontal alignment
+        for (final other in otherElements) {
+          final otherLeft = other.x;
+          final otherRight = other.x + other.width;
+          final otherCenterX = other.x + other.width / 2;
+
+          // Check various horizontal alignments
+          if (!shouldSnapX) {
+            if ((left - otherLeft).abs() < _snapThreshold) {
+              snappedX = otherLeft;
+              shouldSnapX = true;
+              _wasSnappedX = true;
+              _lastSnapX = otherLeft;
+              _verticalGuideLines.add(otherLeft);
+            } else if ((right - otherRight).abs() < _snapThreshold) {
+              snappedX = otherRight - element.width;
+              shouldSnapX = true;
+              _wasSnappedX = true;
+              _lastSnapX = otherRight - element.width;
+              _verticalGuideLines.add(otherRight);
+            } else if ((left - otherRight).abs() < _snapThreshold) {
+              snappedX = otherRight;
+              shouldSnapX = true;
+              _wasSnappedX = true;
+              _lastSnapX = otherRight;
+              _verticalGuideLines.add(otherRight);
+            } else if ((right - otherLeft).abs() < _snapThreshold) {
+              snappedX = otherLeft - element.width;
+              shouldSnapX = true;
+              _wasSnappedX = true;
+              _lastSnapX = otherLeft - element.width;
+              _verticalGuideLines.add(otherLeft);
+            } else if ((centerX - otherCenterX).abs() < _snapThreshold) {
+              snappedX = otherCenterX - element.width / 2;
+              shouldSnapX = true;
+              _wasSnappedX = true;
+              _lastSnapX = otherCenterX - element.width / 2;
+              _verticalGuideLines.add(otherCenterX);
+            }
+          }
+        }
+      }
+    }
+
+    if (!breakingSnapY && !previouslySnappedY && slowYMovement) {
+      // Check grid snapping for Y
+      if (_shouldSnapToGrid()) {
+        double gridSnappedY = _snapToGrid(newY);
+
+        if ((gridSnappedY - newY).abs() < _snapThreshold) {
+          snappedY = gridSnappedY;
+          shouldSnapY = true;
+          _wasSnappedY = true;
+          _lastSnapY = gridSnappedY;
+        }
+      }
+
+      // Check element snapping for Y
+      if (_shouldSnapToElements() && !shouldSnapY) {
+        final otherElements = _elements.where((e) => e.id != id).toList();
+
+        // Element edges
+        final top = newY;
+        final bottom = newY + element.height;
+        final centerY = newY + element.height / 2;
+
+        // Check vertical alignment
+        for (final other in otherElements) {
+          final otherTop = other.y;
+          final otherBottom = other.y + other.height;
+          final otherCenterY = other.y + other.height / 2;
+
+          // Check various vertical alignments
+          if (!shouldSnapY) {
+            if ((top - otherTop).abs() < _snapThreshold) {
+              snappedY = otherTop;
+              shouldSnapY = true;
+              _wasSnappedY = true;
+              _lastSnapY = otherTop;
+              _horizontalGuideLines.add(otherTop);
+            } else if ((bottom - otherBottom).abs() < _snapThreshold) {
+              snappedY = otherBottom - element.height;
+              shouldSnapY = true;
+              _wasSnappedY = true;
+              _lastSnapY = otherBottom - element.height;
+              _horizontalGuideLines.add(otherBottom);
+            } else if ((top - otherBottom).abs() < _snapThreshold) {
+              snappedY = otherBottom;
+              shouldSnapY = true;
+              _wasSnappedY = true;
+              _lastSnapY = otherBottom;
+              _horizontalGuideLines.add(otherBottom);
+            } else if ((bottom - otherTop).abs() < _snapThreshold) {
+              snappedY = otherTop - element.height;
+              shouldSnapY = true;
+              _wasSnappedY = true;
+              _lastSnapY = otherTop - element.height;
+              _horizontalGuideLines.add(otherTop);
+            } else if ((centerY - otherCenterY).abs() < _snapThreshold) {
+              snappedY = otherCenterY - element.height / 2;
+              shouldSnapY = true;
+              _wasSnappedY = true;
+              _lastSnapY = otherCenterY - element.height / 2;
+              _horizontalGuideLines.add(otherCenterY);
+            }
           }
         }
       }
@@ -167,8 +290,8 @@ class CanvasState extends ChangeNotifier {
     updateElement(
       id,
       element.copyWith(
-        x: shouldSnapX ? snappedX : newX,
-        y: shouldSnapY ? snappedY : newY,
+        x: breakingSnapX ? newX : (shouldSnapX ? snappedX : newX),
+        y: breakingSnapY ? newY : (shouldSnapY ? snappedY : newY),
       ),
     );
   }
